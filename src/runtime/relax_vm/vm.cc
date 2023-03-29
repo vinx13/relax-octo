@@ -228,6 +228,50 @@ PackedFunc VirtualMachine::GetFunction(const std::string& name,
       }
       *rv = vm_func.param_names[index];
     });
+  } else if (name == "profile") {
+    return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
+      std::string f_name = args[0];
+      Index gf_idx = exec_->global_map.at(f_name);
+
+      std::vector<Device> devices;
+      for (auto dev : this->devices) {
+        if (dev.device_type > 0) {
+          devices.push_back(dev);
+        }
+      }
+
+      prof_ = profiling::Profiler(devices, {}, {{String("Executor"), String("VM")}});
+
+
+      auto inputs = GetInputsFor(f_name);
+      bool clear_inputs = false;
+      if (inputs.size() == 0) {
+        ICHECK(args.num_args > 1) << "No input is provided";
+        TVMArgs f_args(args.values + 1, args.type_codes + 1, args.num_args - 1);
+        SetInput(f_name, args, 1);
+        inputs = GetInputsFor(f_name);
+        clear_inputs = true;
+      } else {
+        ICHECK_EQ(args.num_args, 1) << "Inputs are already provided by set_input.";
+      }
+
+      // warmup
+      this->Invoke(gf_idx, inputs);
+
+      prof_->Start();
+      this->Invoke(gf_idx, inputs);
+      prof_->Stop();
+
+      // Return the report as json, since profiling::Report object is not supported by RPC
+      std::string report_json = prof_->Report()->AsJSON();
+      *rv = report_json;
+
+      prof_ = std::nullopt;  // releases hardware counters
+      if (clear_inputs) {
+        // SetInput modifies the internal states of VM. Undo the change after profiling.
+        ClearInputsFor(f_name);
+      }
+    });
   }
 
   // check if this is a function we saved
@@ -339,6 +383,34 @@ void VirtualMachine::PrepareFuncTable(Index func_index) {
 void VirtualMachine::RunInstrCall(VMFrame* curr_frame, Instruction instr) {
   DLOG(INFO) << "\n  pc = " << pc_ << ", execute: " << exec_->func_names[instr.func_idx];
 
+  bool profiling = false;
+  if (prof_ && prof_->IsRunning()) {
+    const auto& inst = instr;
+    auto f_name = GetFuncName(inst.func_idx);
+    std::optional<Device> dev;
+    std::vector<NDArray> arrs;
+    for (Index i = 0; i < inst.num_args; ++i) {
+      Instruction::Arg arg = inst.args[i];
+      if (arg.kind() == Instruction::ArgKind::kRegister && arg.value() != Instruction::kVMRegister) {
+        auto reg = ReadRegister(curr_frame, arg.value());
+        if (reg.type_code() == kTVMNDArrayHandle) {
+          NDArray arr = reg;
+          dev = arr->device;
+          arrs.push_back(arr);
+        }
+      }
+    }
+
+    std::unordered_map<std::string, ObjectRef> metrics;
+    metrics["Argument Shapes"] = profiling::ShapeString(arrs);
+
+    // If a sutiable device is found, enable profiling.
+    if (dev) {
+      profiling = true;
+      prof_->StartCall(f_name, *dev, metrics);
+    }
+  }
+
   // Use the call arg stack from the current frame to increase reuse
   // and avoid re-allocation
   curr_frame->call_arg_values.resize(instr.num_args);
@@ -386,6 +458,10 @@ void VirtualMachine::RunInstrCall(VMFrame* curr_frame, Instruction instr) {
   }
   // increment pc
   pc_++;
+
+  if (profiling) {
+    prof_->StopCall();
+  }
 }
 
 int64_t VirtualMachine::LoadScalarInt(RegName reg) const {
@@ -499,7 +575,7 @@ void VirtualMachine::SetInput(std::string func_name, TVMArgs args, int offset) {
       int index = i - offset;
       SetInputTensorWithIndex(func_args, args[i], index, devices[0]);
     }
-    inputs_.emplace(func_name, func_args);
+    inputs_[func_name] = func_args;
   } else {
     LOG(FATAL) << "ValueError: Unknown function: " << func_name;
   }

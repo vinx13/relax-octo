@@ -26,6 +26,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <optional>
+#include <tvm/runtime/profiling.h>
 
 #include "./bytecode.h"
 #include "./executable.h"
@@ -209,6 +211,29 @@ class VirtualMachine : public runtime::ModuleNode {
    */
   RegType LookupVMOutput(const std::string& func_name);
 
+  /*!
+   * \brief Retrieve the name of the function identified by the given index.
+   * \param idx The index into the VM executable function table.
+   * \return The name of the function.
+   */
+  std::string GetFuncName(int idx) {
+    if (idx >= 0 && idx < exec_->func_names.size())
+    return exec_->func_names[idx];
+    return "unknown";
+  }
+
+
+  /*!
+   * \brief Retrieve the inputs for a function.
+   * \param func_name The name of the function.
+   * \return The function inputs.
+   */
+  const std::vector<RegType>& GetInputsFor(const std::string& func_name) {
+    return inputs_[func_name];
+  }
+
+  void ClearInputsFor(const std::string& func_name) { inputs_.erase(func_name); }
+
  private:
   /*! \brief The loaded executable. */
   ObjectPtr<Executable> exec_;
@@ -237,6 +262,7 @@ class VirtualMachine : public runtime::ModuleNode {
   std::unordered_map<std::string, RegType> outputs_;
   /*! \brief A store of closures created by `save_function`. */
   std::unordered_map<std::string, PackedFunc> saved_closures_;
+  std::optional<profiling::Profiler> prof_;
 };
 
 }  // namespace relax_vm
