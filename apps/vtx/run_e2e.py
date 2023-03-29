@@ -329,6 +329,10 @@ if __name__ == "__main__":
     #result = evaluator(input0, input1, input2)
     result = evaluator(input0)
     print(result)
+
+    profile_report = vm["profile"]("main", input0)
+    print(tvm.runtime.profiling.Report.from_json(profile_report))
+
     #res = vm["main"](input0, input1, input2)
     res = vm["main"](input0)
     print("TVM result: ", res[0], res[1], res[2], res[3], res[4])
