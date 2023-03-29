@@ -398,6 +398,13 @@ void VirtualMachine::RunInstrCall(VMFrame* curr_frame, Instruction instr) {
           dev = arr->device;
           arrs.push_back(arr);
         }
+      } else if (arg.kind() == Instruction::kConstIdx) {
+        const auto& value = this->constants[arg.value()];
+        if (value.type_code() == kTVMNDArrayHandle) {
+          NDArray arr = this->constants[arg.value()];
+          dev = arr->device;
+          arrs.push_back(arr);
+        }
       }
     }
 
